@@ -67,6 +67,9 @@ from .utils.text_sanitizer import PreparedSpeechText, SpeechTextSanitizer
 
 logger = logging.getLogger(__name__)
 VOICE_ONLY_SUPPRESSION_TTL_SECONDS = 120
+OUTPUT_MARKER_MODE_EXTRA = "_tts_emotion_router_output_marker_mode"
+OUTPUT_MARKER_MODE_PRESERVE = "preserve_for_tts"
+OUTPUT_MARKER_MODE_STRIP = "strip_visible"
 
 
 @register(PLUGIN_ID, PLUGIN_NAME, PLUGIN_DESC, PLUGIN_VERSION)
@@ -418,6 +421,31 @@ class TTSEmotionRouter(Star):
     def _strip_any_visible_markers(self, text: str) -> str:
         return self.marker_processor.strip_all_visible_markers(text)
 
+    def get_output_marker_mode(self, event: AstrMessageEvent) -> str:
+        if not self.emo_marker_enable:
+            return OUTPUT_MARKER_MODE_STRIP
+
+        umo = self._get_umo(event)
+        if self.config.is_voice_output_enabled_for_umo(umo):
+            return OUTPUT_MARKER_MODE_PRESERVE
+
+        return OUTPUT_MARKER_MODE_STRIP
+
+    def publish_output_marker_mode(self, event: AstrMessageEvent) -> str:
+        mode = self.get_output_marker_mode(event)
+        try:
+            event.set_extra(OUTPUT_MARKER_MODE_EXTRA, mode)
+        except Exception:
+            logger.debug("publish output marker mode failed", exc_info=True)
+        return mode
+
+    def sanitize_visible_output_text(self, text: str) -> str:
+        normalized = self._normalize_text(text or "")
+        stripped, _ = self._strip_emo_head_many(normalized)
+        stripped = self._strip_any_visible_markers(stripped)
+        visible = self._prepare_visible_text(stripped)
+        return (visible or stripped or "").strip()
+
     def _is_minimax_provider(self) -> bool:
         return self.config.get_tts_provider() == "minimax"
 
@@ -565,6 +593,7 @@ class TTSEmotionRouter(Star):
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, request):
         try:
+            marker_mode = self.publish_output_marker_mode(event)
             if not self._should_inject_minimax_prompt(event):
                 return
 
@@ -572,7 +601,11 @@ class TTSEmotionRouter(Star):
             pp = getattr(request, "prompt", "") or ""
             injected_parts: List[str] = []
 
-            if self.emo_marker_enable and not self.marker_processor.is_marker_present(sp, pp):
+            if (
+                marker_mode == OUTPUT_MARKER_MODE_PRESERVE
+                and self.emo_marker_enable
+                and not self.marker_processor.is_marker_present(sp, pp)
+            ):
                 prompt_hint = self.config.get_marker_prompt_hint()
                 if prompt_hint:
                     injected_parts.append(prompt_hint)
@@ -590,43 +623,48 @@ class TTSEmotionRouter(Star):
 
         label: Optional[str] = None
         cached_text: Optional[str] = None
+        rc = getattr(response, "result_chain", None)
+        chain = getattr(rc, "chain", None)
 
-        try:
-            text = getattr(response, "completion_text", None)
-            if isinstance(text, str) and text.strip():
-                t0 = self._normalize_text(text)
-                cleaned, l1 = self._strip_emo_head_many(t0)
-                if l1 in EMOTIONS:
-                    label = l1
-                response.completion_text = cleaned
-                try:
-                    setattr(response, "_completion_text", cleaned)
-                except Exception:
-                    pass
-                cached_text = cleaned or cached_text
-        except Exception as e:
-            logging.warning("strip completion_text failed: %s", e)
-
-        try:
-            rc = getattr(response, "result_chain", None)
-            if rc and hasattr(rc, "chain") and rc.chain:
+        if rc and hasattr(rc, "chain") and chain:
+            try:
                 new_chain = []
                 cleaned_once = False
-                for comp in rc.chain:
+                for comp in chain:
                     if (not cleaned_once and isinstance(comp, Plain) and getattr(comp, "text", None)):
                         t0 = self._normalize_text(comp.text)
                         t, l2 = self._strip_emo_head_many(t0)
                         if l2 in EMOTIONS and label is None:
                             label = l2
                         if t:
-                            new_chain.append(Plain(text=t))
+                            comp.text = t
+                            new_chain.append(comp)
                             cached_text = t or cached_text
                         cleaned_once = True
                     else:
                         new_chain.append(comp)
                 rc.chain = new_chain
-        except Exception as e:
-            logging.warning("strip result_chain failed: %s", e)
+                text = getattr(response, "completion_text", None)
+                if isinstance(text, str) and text.strip():
+                    cached_text = text
+            except Exception as e:
+                logging.warning("strip result_chain failed: %s", e)
+        else:
+            try:
+                text = getattr(response, "completion_text", None)
+                if isinstance(text, str) and text.strip():
+                    t0 = self._normalize_text(text)
+                    cleaned, l1 = self._strip_emo_head_many(t0)
+                    if l1 in EMOTIONS:
+                        label = l1
+                    response.completion_text = cleaned
+                    try:
+                        setattr(response, "_completion_text", cleaned)
+                    except Exception:
+                        pass
+                    cached_text = cleaned or cached_text
+            except Exception as e:
+                logging.warning("strip completion_text failed: %s", e)
 
         visible_text = (cached_text or "").strip()
         if visible_text:
