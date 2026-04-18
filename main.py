@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import inspect
+import json
 import logging
 import time
 import heapq
@@ -48,7 +48,6 @@ from .core.constants import (
     INFLIGHT_SIG_TTL_SECONDS,
     INFLIGHT_SIG_MAX_COUNT,
     DEFAULT_TEST_TEXT,
-    HISTORY_WRITE_DELAY,
     MINIMAX_EXPRESSIVE_MODELS,
     MINIMAX_EXPRESSIVE_TAGS,
 )
@@ -311,6 +310,23 @@ class TTSEmotionRouter(Star):
     def _get_session_state(self, sid: str) -> SessionState:
         return self._session_state.setdefault(sid, SessionState())
 
+    async def _get_current_conversation_id(self, event: AstrMessageEvent) -> Optional[str]:
+        manager = getattr(self.context, "conversation_manager", None)
+        if manager is None:
+            return None
+        return await manager.get_curr_conversation_id(self._get_umo(event))
+
+    async def _ensure_conversation_id(self, event: AstrMessageEvent) -> Optional[str]:
+        manager = getattr(self.context, "conversation_manager", None)
+        if manager is None:
+            return None
+
+        sid = self._get_umo(event)
+        conversation_id = await manager.get_curr_conversation_id(sid)
+        if conversation_id:
+            return conversation_id
+        return await manager.new_conversation(sid)
+
     def _track_background_task(self, coro, name: str) -> None:
         task = asyncio.create_task(coro, name=name)
         self._background_tasks.append(task)
@@ -545,6 +561,7 @@ class TTSEmotionRouter(Star):
         prepared = self._prepare_text_for_tts(text)
         tts_text = (prepared.tts_text or "").strip()
         send_text = (prepared.display_text or "").strip()
+        history_text = send_text or tts_text
         if not tts_text:
             return False, [], "没有可用于语音合成的文本。"
 
@@ -561,9 +578,9 @@ class TTSEmotionRouter(Star):
         if text_voice_enabled and send_text:
             chain.append(Plain(text=send_text))
         chain.append(Record(file=norm_path))
-        if send_text:
-            st.set_assistant_text(send_text)
-        return True, chain, "ok"
+        if history_text:
+            st.set_assistant_text(history_text)
+        return True, chain, history_text
 
     async def _send_manual_tts(
         self,
@@ -572,9 +589,9 @@ class TTSEmotionRouter(Star):
         *,
         suppress_next_llm_plain_text: bool = False,
     ) -> str:
-        ok, chain, msg = await self._build_manual_tts_chain(event, text)
+        ok, chain, history_or_error = await self._build_manual_tts_chain(event, text)
         if not ok:
-            return msg
+            return history_or_error
 
         try:
             await event.send(event.chain_result(chain))
@@ -684,14 +701,6 @@ class TTSEmotionRouter(Star):
                 st.set_assistant_text(visible_text)
         except Exception as e:
             logging.error("update session state failed: %s", e)
-
-        try:
-            if visible_text:
-                ok = await self._append_assistant_text_to_history(event, visible_text)
-                if not ok:
-                    asyncio.create_task(self._delayed_history_write(event, visible_text, delay=HISTORY_WRITE_DELAY))
-        except Exception as e:
-            logging.error("append history failed: %s", e)
 
     @filter.on_decorating_result(priority=999)
     async def _final_strip_markers(self, event: AstrMessageEvent):
@@ -864,136 +873,83 @@ class TTSEmotionRouter(Star):
         try:
             umo = self._get_umo(event)
             st = self._session_state.get(umo)
-            if not st or not st.assistant_text:
+            if not st:
                 return
 
-            text = st.assistant_text
-            st.assistant_text = None
-            await self._append_assistant_text_to_history(event, text)
+            text, conversation_id = st.consume_pending_history()
+            if not text:
+                return
+
+            ok = await self._append_assistant_text_to_history(
+                event,
+                text,
+                conversation_id=conversation_id,
+                create_if_missing=not bool(conversation_id),
+            )
+            if not ok:
+                st.queue_pending_history(text, conversation_id)
         except Exception as e:
             logging.debug("ensure_history_saved error: %s", e)
 
-    async def _invoke_maybe_async(self, method: Any, *args: Any) -> Any:
-        result = method(*args)
-        if inspect.isawaitable(result):
-            return await result
-        return result
-
-    async def _write_history_via_conversation_manager(self, sid: str, text: str) -> bool:
-        manager = getattr(self.context, "conversation_manager", None)
-        if manager is None:
-            return False
-
-        # Prefer manager-level assistant append methods; fallback to generic message APIs.
-        method_candidates = [
-            ("append_assistant_response", (sid, text)),
-            ("append_assistant_message", (sid, text)),
-            ("add_assistant_message", (sid, text)),
-            ("append_message", (sid, "assistant", text)),
-            ("add_message", (sid, "assistant", text)),
-        ]
-        for method_name, args in method_candidates:
-            method = getattr(manager, method_name, None)
-            if not callable(method):
-                continue
-            try:
-                result = await self._invoke_maybe_async(method, *args)
-                if result is False:
-                    continue
-                return True
-            except TypeError:
-                continue
-            except Exception:
-                logger.debug("conversation_manager.%s failed", method_name, exc_info=True)
-
-        # Some AstrBot versions expose per-conversation objects.
-        for getter_name in ("get_conversation", "get_or_create_conversation", "get_session"):
-            getter = getattr(manager, getter_name, None)
-            if not callable(getter):
-                continue
-            try:
-                conv = await self._invoke_maybe_async(getter, sid)
-            except Exception:
-                continue
-            if conv is None:
-                continue
-
-            conv_candidates = [
-                ("append_assistant_response", (text,)),
-                ("append_assistant_message", (text,)),
-                ("add_assistant_message", (text,)),
-                ("append_message", ("assistant", text)),
-                ("add_message", ("assistant", text)),
-            ]
-            for method_name, args in conv_candidates:
-                method = getattr(conv, method_name, None)
-                if not callable(method):
-                    continue
-                try:
-                    result = await self._invoke_maybe_async(method, *args)
-                    if result is False:
-                        continue
-                    return True
-                except TypeError:
-                    continue
-                except Exception:
-                    logger.debug("conversation object %s failed", method_name, exc_info=True)
-
-        return False
-
-    async def _write_history_via_provider(self, sid: str, text: str) -> bool:
-        provider = getattr(self.context, "llm_provider", None)
-        try:
-            if provider is None and hasattr(self.context, "get_llm_provider"):
-                provider = self.context.get_llm_provider()
-        except Exception:
-            provider = None
-
-        if provider is None:
-            return False
-
-        method_candidates = [
-            ("append_assistant_response", (sid, text)),
-            ("append_message", (sid, "assistant", text)),
-            ("add_message", (sid, "assistant", text)),
-        ]
-        for method_name, args in method_candidates:
-            method = getattr(provider, method_name, None)
-            if not callable(method):
-                continue
-            try:
-                result = await self._invoke_maybe_async(method, *args)
-                if result is False:
-                    continue
-                return True
-            except TypeError:
-                continue
-            except Exception:
-                logger.debug("provider.%s failed", method_name, exc_info=True)
-        return False
-
-    async def _append_assistant_text_to_history(self, event: AstrMessageEvent, text: str) -> bool:
-        try:
-            if not text or not text.strip():
-                return False
-            sid = self._get_umo(event)
-            if await self._write_history_via_conversation_manager(sid, text):
-                return True
-            return await self._write_history_via_provider(sid, text)
-        except Exception:
-            return False
-
-    async def _delayed_history_write(
+    async def _append_assistant_text_to_history(
         self,
         event: AstrMessageEvent,
         text: str,
-        delay: float = HISTORY_WRITE_DELAY,
-    ) -> None:
+        *,
+        conversation_id: Optional[str] = None,
+        create_if_missing: bool = False,
+    ) -> bool:
         try:
-            await asyncio.sleep(delay)
-            await self._append_assistant_text_to_history(event, text)
-        except Exception as e:
-            logging.debug("delayed_history_write failed: %s", e)
+            cleaned = (text or "").strip()
+            if not cleaned:
+                return False
+
+            manager = getattr(self.context, "conversation_manager", None)
+            if manager is None:
+                return False
+
+            sid = self._get_umo(event)
+            target_cid = (conversation_id or "").strip() or await manager.get_curr_conversation_id(sid)
+            if not target_cid:
+                if not create_if_missing:
+                    logger.info("skip assistant history write sid=%s reason=no_conversation", sid)
+                    return False
+                target_cid = await manager.new_conversation(sid)
+
+            conversation = await manager.get_conversation(sid, target_cid)
+            if conversation is None and create_if_missing:
+                target_cid = await manager.new_conversation(sid)
+                conversation = await manager.get_conversation(sid, target_cid)
+            if conversation is None:
+                logger.warning(
+                    "assistant history write failed sid=%s cid=%s reason=conversation_missing",
+                    sid,
+                    target_cid,
+                )
+                return False
+
+            raw_history = getattr(conversation, "history", "[]") or "[]"
+            try:
+                history = json.loads(raw_history)
+                if not isinstance(history, list):
+                    raise TypeError("conversation history is not a list")
+            except Exception:
+                logger.warning(
+                    "conversation history parse failed sid=%s cid=%s; reset to empty history",
+                    sid,
+                    target_cid,
+                )
+                history = []
+
+            history.append({"role": "assistant", "content": cleaned})
+            await manager.update_conversation(
+                sid,
+                target_cid,
+                history=history,
+            )
+            return True
+        except Exception:
+            return False
 
     # ---------------- after message sent ----------------
 
@@ -1110,12 +1066,29 @@ class TTSEmotionRouter(Star):
         if not content:
             content = DEFAULT_TEST_TEXT
 
-        ok, chain, msg = await self._build_manual_tts_chain(event, content)
+        ok, chain, history_or_error = await self._build_manual_tts_chain(event, content)
         if not ok:
-            yield event.plain_result(msg)
+            yield event.plain_result(history_or_error)
             return
 
+        history_text = history_or_error.strip()
+        conversation_id = await self._ensure_conversation_id(event)
+        if history_text:
+            sid = self._get_umo(event)
+            self._get_session_state(sid).queue_pending_history(
+                history_text,
+                conversation_id,
+            )
+
         yield event.chain_result(chain)
+
+        if history_text and not hasattr(filter, "after_message_sent"):
+            await self._append_assistant_text_to_history(
+                event,
+                history_text,
+                conversation_id=conversation_id,
+                create_if_missing=True,
+            )
 
     if hasattr(filter, "llm_tool"):
 
@@ -1131,13 +1104,23 @@ class TTSEmotionRouter(Star):
             """
             content = (text or "").strip()
             if not content:
-                return "文本为空"
+                yield "文本为空"
+                return
 
-            send_result = await self._send_manual_tts(event, content, suppress_next_llm_plain_text=True)
-            if send_result == "语音已发送。":
-                # 关键：工具已完成语音发送后，终止当前事件后续文本输出
-                # 这样可避免 LLM 在工具调用后继续长篇打字
-                event.stop_event()
-                return None
+            ok, chain, history_or_error = await self._build_manual_tts_chain(event, content)
+            if not ok:
+                yield history_or_error
+                return
 
-            return send_result
+            history_text = history_or_error.strip()
+            try:
+                await event.send(event.chain_result(chain))
+            except Exception as e:
+                logging.error("tts_speak send failed: %s", e)
+                yield f"发送失败：{e}"
+                return
+
+            event.clear_result()
+            yield None
+            yield history_text or "语音已发送。"
+            return

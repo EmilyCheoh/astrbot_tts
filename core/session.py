@@ -44,7 +44,8 @@ class SessionState:
     last_tts_time: float = 0.0
     last_assistant_text: Optional[str] = None
     last_assistant_text_time: float = 0.0
-    assistant_text: Optional[str] = None
+    pending_history_text: Optional[str] = None
+    pending_history_conversation_id: Optional[str] = None
     text_voice_enabled: Optional[bool] = None
     suppress_next_llm_plain_text: bool = False
     suppress_next_llm_plain_text_until: float = 0.0
@@ -64,6 +65,24 @@ class SessionState:
         """设置最近的助手文本。"""
         self.last_assistant_text = text.strip() if text else None
         self.last_assistant_text_time = time.time()
+
+    def queue_pending_history(
+        self,
+        text: str,
+        conversation_id: Optional[str],
+    ) -> None:
+        cleaned = text.strip() if text else ""
+        self.pending_history_text = cleaned or None
+        self.pending_history_conversation_id = (
+            str(conversation_id).strip() if conversation_id else None
+        )
+
+    def consume_pending_history(self) -> tuple[Optional[str], Optional[str]]:
+        text = self.pending_history_text
+        conversation_id = self.pending_history_conversation_id
+        self.pending_history_text = None
+        self.pending_history_conversation_id = None
+        return text, conversation_id
 
     def mark_next_llm_plain_text_suppressed(self, ttl_seconds: Optional[float] = None) -> None:
         """
