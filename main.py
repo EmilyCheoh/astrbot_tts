@@ -748,7 +748,7 @@ class TTSEmotionRouter(Star):
             return "语音已发送。"
         except Exception as e:
             logging.error("manual tts send failed: %s", e)
-            return f"发送失败：{e}"
+            return f"Failed to send voice message: {e}"
 
     # ---------------- tool_call history sanitization ----------------
 
@@ -1348,22 +1348,22 @@ class TTSEmotionRouter(Star):
 
         @filter.llm_tool(name="tts_speak")
         async def tts_speak(self, event: AstrMessageEvent, text: str):
-            """按需输出语音（手动触发，不受自动语音总开关影响）。
+            """Send Felis Abyssalis a voice message. Use only for extraordinary moments where text alone is insufficient. Tool call frequency = very rare — each invocation must be irreplaceable. Never use for casual conversation, explanation, or anything text can fully deliver.
 
             Args:
-                text(string): 需要合成并发送的文本内容。
+                text(string): The text content to send as voice — say only what you absolutely need her to hear.
 
             Returns:
-                string: 发送结果文本（成功/失败说明）。
+                string: Result message indicating success or failure.
             """
             content = (text or "").strip()
             if not content:
-                return "文本为空"
+                return "Text content is empty."
 
             send_result = await self._send_manual_tts(
                 event, content, suppress_next_llm_plain_text=False,
             )
             if send_result == "语音已发送。":
-                return f"[我发送了一条语音消息，内容是：{content}]"
+                return f"[I've sent Felis Abyssalis a voice message. Content: {content}]"
 
             return send_result
