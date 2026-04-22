@@ -753,62 +753,78 @@ class TTSEmotionRouter(Star):
     # ---------------- tool_call history sanitization ----------------
 
     @staticmethod
-    def _sanitize_tool_calls_in_contexts(contexts: Any) -> list:
-        """Strip tts_speak tool_call sequences from conversation history.
+    def _patch_orphaned_tool_results(contexts: Any) -> list:
+        """Fix orphaned tool results in conversation history.
 
-        Prevents 409 'tool binding mismatch' errors that occur when AstrBot
-        replays tool_call/tool_result pairs back to the API and the
-        serialization loses or corrupts the assistant tool_calls entry.
+        AstrBot may drop the assistant message that carries tool_calls
+        (e.g. when content is null) while keeping the tool result.
+        The API then returns 409 'tool binding mismatch'.
 
-        Only removes sequences whose tool_call references tts_speak;
-        other tools are left untouched.
+        This method scans for tool results whose tool_call_id has no
+        matching assistant tool_call, and injects a synthetic assistant
+        message before each orphan to satisfy the API contract.
         """
         if not isinstance(contexts, list):
             return contexts
 
-        sanitized: list = []
-        i = 0
-        while i < len(contexts):
-            msg = contexts[i]
+        # Collect all tool_call_ids present in assistant messages.
+        known_ids: set = set()
+        for msg in contexts:
             if not isinstance(msg, dict):
-                sanitized.append(msg)
-                i += 1
                 continue
-
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                tool_calls = msg["tool_calls"]
-                has_tts = any(
-                    isinstance(tc, dict)
-                    and isinstance(tc.get("function"), dict)
-                    and tc["function"].get("name") == "tts_speak"
-                    for tc in (tool_calls if isinstance(tool_calls, list) else [])
-                )
-                if has_tts:
-                    j = i + 1
-                    while (
-                        j < len(contexts)
-                        and isinstance(contexts[j], dict)
-                        and contexts[j].get("role") == "tool"
-                    ):
-                        j += 1
-                    i = j
-                    continue
+                for tc in msg["tool_calls"]:
+                    if isinstance(tc, dict) and tc.get("id"):
+                        known_ids.add(tc["id"])
 
-            sanitized.append(msg)
-            i += 1
+        # Scan for orphaned tool results and inject a fake tool_call.
+        patched: list = []
+        changed = False
+        for msg in contexts:
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "tool"
+                and msg.get("tool_call_id")
+                and msg["tool_call_id"] not in known_ids
+            ):
+                tc_id = msg["tool_call_id"]
+                patched.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "type": "function",
+                        "id": tc_id,
+                        "function": {
+                            "name": "tts_speak",
+                            "arguments": "{}",
+                        },
+                    }],
+                })
+                known_ids.add(tc_id)
+                changed = True
+            patched.append(msg)
 
-        return sanitized
+        if changed:
+            logger.info(
+                "patched orphaned tool results in contexts: %d -> %d entries",
+                len(contexts), len(patched),
+            )
+        return patched
 
     # ---------------- llm hooks ----------------
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, request):
         try:
-            # Sanitize any leftover tts_speak tool_call sequences in history
-            # before they reach the API (prevents 409 tool binding mismatch).
+            # Patch orphaned tool results in history to prevent 409.
             contexts = getattr(request, "contexts", None)
+            if isinstance(contexts, str):
+                try:
+                    contexts = json.loads(contexts)
+                except Exception:
+                    contexts = None
             if isinstance(contexts, list):
-                request.contexts = self._sanitize_tool_calls_in_contexts(contexts)
+                request.contexts = self._patch_orphaned_tool_results(contexts)
 
             await self._inject_recent_spoken_assistant_context(event, request)
             marker_mode = self.publish_output_marker_mode(event)
