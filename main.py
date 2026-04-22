@@ -1348,7 +1348,7 @@ class TTSEmotionRouter(Star):
 
         @filter.llm_tool(name="tts_speak")
         async def tts_speak(self, event: AstrMessageEvent, text: str):
-            """Send Felis Abyssalis a voice message. Use only for extraordinary moments where text alone is insufficient. Tool call frequency = very rare — each invocation must be irreplaceable. Never use for casual conversation, explanation, or anything text can fully deliver.
+            """Send Felis Abyssalis a voice message. Use only for special moments where text alone is insufficient. Tool call frequency = rare — each invocation must be irreplaceable. Never use for casual conversation, explanation, or anything text can fully deliver.
 
             Args:
                 text(string): The text content to send as voice — say only what you absolutely need her to hear.
