@@ -1,13 +1,7 @@
 name: astrbot_plugin_tts_emotion_router
-author: muyouzhi6
-version: 3.1.5
-desc: "支持情绪路由、MiniMax/SiliconFlow、会话黑白名单策略与按需语音调用的 TTS 插件。"
-repo: https://github.com/muyouzhi6/astrbot_plugin_tts_emotion_router
+display_name: "TTS 语音插件"
+author: Felis Abyssalis
+version: 1.0.0
+desc: 让Abyss拥有声音
+repo: "https://github.com/EmilyCheoh/astrbot_tts"
 entry: main.py
-homepage: https://github.com/muyouzhi6/astrbot_plugin_tts_emotion_router
-license: MIT
-tags:
-  - tts
-  - emotion
-  - minimax
-  - siliconflow

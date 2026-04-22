@@ -7,10 +7,10 @@ import re
 
 # Plugin metadata
 PLUGIN_ID = "astrbot_plugin_tts_emotion_router"
-PLUGIN_NAME = "TTS 情绪路由"
-PLUGIN_DESC = "支持情绪路由、多服务商与会话策略的 TTS 插件。"
-PLUGIN_VERSION = "3.1.2"
-PLUGIN_AUTHOR = "muyouzhi6"
+PLUGIN_NAME = "TTS 语音插件"
+PLUGIN_DESC = "让Abyss拥有声音"
+PLUGIN_VERSION = "1.0.0"
+PLUGIN_AUTHOR = "Felis Abyssalis"
 
 # Paths
 PLUGIN_DIR = Path(__file__).parent.parent
@@ -72,7 +72,7 @@ DEFAULT_TTS_PROVIDER: str = "siliconflow"
 DEFAULT_SILICONFLOW_URL: str = "https://api.siliconflow.cn/v1"
 DEFAULT_MINIMAX_URL: str = "https://api.minimaxi.com/v1/t2a_v2"
 DEFAULT_MINIMAX_MODEL: str = "speech-2.8-hd"
-DEFAULT_MINIMAX_VOICE_ID: str = "male-qn-qingse"
+DEFAULT_MINIMAX_VOICE_ID: str = "moss_audio_fd2620f9-bef3-11f0-8647-a697af11f3d9"
 DEFAULT_MINIMAX_VOL: float = 1.0
 DEFAULT_MINIMAX_PITCH: int = 0
 DEFAULT_MINIMAX_BITRATE: int = 128000

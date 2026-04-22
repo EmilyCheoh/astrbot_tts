@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 import time
 import heapq
 from typing import Any, Dict, List, Optional, Tuple
@@ -1237,7 +1238,14 @@ class TTSEmotionRouter(Star):
 
     @filter.command("tts_say", priority=1)
     async def tts_say(self, event: AstrMessageEvent, *, text: Optional[str] = None):
-        content = (text or DEFAULT_TEST_TEXT).strip()
+        # Parse <...> delimited text from raw message to preserve spaces and newlines.
+        raw_msg = getattr(event, "message_str", "") or ""
+        angle_match = re.search(r"<([\s\S]+?)>", raw_msg)
+        if angle_match:
+            content = re.sub(r"[\r\n]+", " ", angle_match.group(1)).strip()
+            content = re.sub(r" {2,}", " ", content)
+        else:
+            content = (text or "").strip()
         if not content:
             content = DEFAULT_TEST_TEXT
 
@@ -1265,51 +1273,52 @@ class TTSEmotionRouter(Star):
             )
             await self._ensure_history_saved(event)
 
-    if hasattr(filter, "llm_tool"):
-
-        @filter.llm_tool(name="tts_speak")
-        async def tts_speak(self, event: AstrMessageEvent, text: str):
-            """按需输出语音（手动触发，不受自动语音总开关影响）。
-
-            Args:
-                text(string): 需要合成并发送的文本内容。
-
-            Returns:
-                string: 发送结果文本（成功/失败说明）。
-            """
-            content = (text or "").strip()
-            if not content:
-                yield "文本为空"
-                return
-
-            ok, chain, history_or_error = await self._build_manual_tts_chain(event, content)
-            if not ok:
-                yield history_or_error
-                return
-
-            history_text = history_or_error.strip()
-            sid = self._get_umo(event)
-            st = self._get_session_state(sid)
-            conversation_id = await self._get_current_conversation_id(event)
-            if history_text:
-                st.queue_pending_history(history_text, conversation_id)
-            try:
-                await event.send(event.chain_result(chain))
-            except Exception as e:
-                st.clear_pending_history()
-                logging.error("tts_speak send failed: %s", e)
-                yield f"发送失败：{e}"
-                return
-
-            if history_text:
-                await self._remember_spoken_assistant_text(
-                    event,
-                    history_text,
-                    conversation_id=conversation_id,
-                )
-                if not hasattr(filter, "after_message_sent"):
-                    await self._ensure_history_saved(event)
-            event.clear_result()
-            yield None
-            yield history_text or "语音已发送。"
-            return
+    # --- tts_speak (LLM tool) disabled due to bugs; to be revisited later ---
+    # if hasattr(filter, "llm_tool"):
+    #
+    #     @filter.llm_tool(name="tts_speak")
+    #     async def tts_speak(self, event: AstrMessageEvent, text: str):
+    #         """按需输出语音（手动触发，不受自动语音总开关影响）。
+    #
+    #         Args:
+    #             text(string): 需要合成并发送的文本内容。
+    #
+    #         Returns:
+    #             string: 发送结果文本（成功/失败说明）。
+    #         """
+    #         content = (text or "").strip()
+    #         if not content:
+    #             yield "文本为空"
+    #             return
+    #
+    #         ok, chain, history_or_error = await self._build_manual_tts_chain(event, content)
+    #         if not ok:
+    #             yield history_or_error
+    #             return
+    #
+    #         history_text = history_or_error.strip()
+    #         sid = self._get_umo(event)
+    #         st = self._get_session_state(sid)
+    #         conversation_id = await self._get_current_conversation_id(event)
+    #         if history_text:
+    #             st.queue_pending_history(history_text, conversation_id)
+    #         try:
+    #             await event.send(event.chain_result(chain))
+    #         except Exception as e:
+    #             st.clear_pending_history()
+    #             logging.error("tts_speak send failed: %s", e)
+    #             yield f"发送失败：{e}"
+    #             return
+    #
+    #         if history_text:
+    #             await self._remember_spoken_assistant_text(
+    #                 event,
+    #                 history_text,
+    #                 conversation_id=conversation_id,
+    #             )
+    #             if not hasattr(filter, "after_message_sent"):
+    #                 await self._ensure_history_saved(event)
+    #         event.clear_result()
+    #         yield None
+    #         yield history_text or "语音已发送。"
+    #         return
