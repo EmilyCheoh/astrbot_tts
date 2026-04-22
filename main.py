@@ -1356,6 +1356,9 @@ class TTSEmotionRouter(Star):
             Returns:
                 string: 发送结果文本（成功/失败说明）。
             """
+            if not self.config.is_tts_speak_tool_enabled():
+                return "tts_speak 工具已禁用。"
+
             content = (text or "").strip()
             if not content:
                 return "文本为空"

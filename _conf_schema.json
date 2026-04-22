@@ -107,7 +107,7 @@
           },
           "voice_id": {
             "type": "string",
-            "description": "默认音色 voice_id",
+            "description": "moss_audio_fd2620f9-bef3-11f0-8647-a697af11f3d9",
             "default": "male-qn-qingse"
           },
           "speed": {
@@ -384,6 +384,11 @@
         }
       }
     }
+  },
+  "tts_speak_tool_enable": {
+    "type": "bool",
+    "description": "启用 LLM tts_speak 工具调用（关闭后 LLM 无法主动发起语音）",
+    "default": true
   },
   "probability": {
     "type": "object",

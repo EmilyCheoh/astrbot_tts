@@ -345,6 +345,9 @@ class ConfigManager:
     def is_probability_output_enabled_for_umo(self, umo: str) -> bool:
         return self._is_feature_enabled_for_umo(FEATURE_PROBABILITY, umo)
 
+    def is_tts_speak_tool_enabled(self) -> bool:
+        return bool(self.get("tts_speak_tool_enable", True))
+
     # ------------------------------------------------------------------
     # UMO list mutation (unified for all features)
     # ------------------------------------------------------------------
