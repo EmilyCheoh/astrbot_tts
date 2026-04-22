@@ -750,11 +750,66 @@ class TTSEmotionRouter(Star):
             logging.error("manual tts send failed: %s", e)
             return f"发送失败：{e}"
 
+    # ---------------- tool_call history sanitization ----------------
+
+    @staticmethod
+    def _sanitize_tool_calls_in_contexts(contexts: Any) -> list:
+        """Strip tts_speak tool_call sequences from conversation history.
+
+        Prevents 409 'tool binding mismatch' errors that occur when AstrBot
+        replays tool_call/tool_result pairs back to the API and the
+        serialization loses or corrupts the assistant tool_calls entry.
+
+        Only removes sequences whose tool_call references tts_speak;
+        other tools are left untouched.
+        """
+        if not isinstance(contexts, list):
+            return contexts
+
+        sanitized: list = []
+        i = 0
+        while i < len(contexts):
+            msg = contexts[i]
+            if not isinstance(msg, dict):
+                sanitized.append(msg)
+                i += 1
+                continue
+
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                tool_calls = msg["tool_calls"]
+                has_tts = any(
+                    isinstance(tc, dict)
+                    and isinstance(tc.get("function"), dict)
+                    and tc["function"].get("name") == "tts_speak"
+                    for tc in (tool_calls if isinstance(tool_calls, list) else [])
+                )
+                if has_tts:
+                    j = i + 1
+                    while (
+                        j < len(contexts)
+                        and isinstance(contexts[j], dict)
+                        and contexts[j].get("role") == "tool"
+                    ):
+                        j += 1
+                    i = j
+                    continue
+
+            sanitized.append(msg)
+            i += 1
+
+        return sanitized
+
     # ---------------- llm hooks ----------------
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, request):
         try:
+            # Sanitize any leftover tts_speak tool_call sequences in history
+            # before they reach the API (prevents 409 tool binding mismatch).
+            contexts = getattr(request, "contexts", None)
+            if isinstance(contexts, list):
+                request.contexts = self._sanitize_tool_calls_in_contexts(contexts)
+
             await self._inject_recent_spoken_assistant_context(event, request)
             marker_mode = self.publish_output_marker_mode(event)
             if not self._should_inject_minimax_prompt(event):
@@ -1273,52 +1328,26 @@ class TTSEmotionRouter(Star):
             )
             await self._ensure_history_saved(event)
 
-    # --- tts_speak (LLM tool) disabled due to bugs; to be revisited later ---
-    # if hasattr(filter, "llm_tool"):
-    #
-    #     @filter.llm_tool(name="tts_speak")
-    #     async def tts_speak(self, event: AstrMessageEvent, text: str):
-    #         """按需输出语音（手动触发，不受自动语音总开关影响）。
-    #
-    #         Args:
-    #             text(string): 需要合成并发送的文本内容。
-    #
-    #         Returns:
-    #             string: 发送结果文本（成功/失败说明）。
-    #         """
-    #         content = (text or "").strip()
-    #         if not content:
-    #             yield "文本为空"
-    #             return
-    #
-    #         ok, chain, history_or_error = await self._build_manual_tts_chain(event, content)
-    #         if not ok:
-    #             yield history_or_error
-    #             return
-    #
-    #         history_text = history_or_error.strip()
-    #         sid = self._get_umo(event)
-    #         st = self._get_session_state(sid)
-    #         conversation_id = await self._get_current_conversation_id(event)
-    #         if history_text:
-    #             st.queue_pending_history(history_text, conversation_id)
-    #         try:
-    #             await event.send(event.chain_result(chain))
-    #         except Exception as e:
-    #             st.clear_pending_history()
-    #             logging.error("tts_speak send failed: %s", e)
-    #             yield f"发送失败：{e}"
-    #             return
-    #
-    #         if history_text:
-    #             await self._remember_spoken_assistant_text(
-    #                 event,
-    #                 history_text,
-    #                 conversation_id=conversation_id,
-    #             )
-    #             if not hasattr(filter, "after_message_sent"):
-    #                 await self._ensure_history_saved(event)
-    #         event.clear_result()
-    #         yield None
-    #         yield history_text or "语音已发送。"
-    #         return
+    if hasattr(filter, "llm_tool"):
+
+        @filter.llm_tool(name="tts_speak")
+        async def tts_speak(self, event: AstrMessageEvent, text: str):
+            """按需输出语音（手动触发，不受自动语音总开关影响）。
+
+            Args:
+                text(string): 需要合成并发送的文本内容。
+
+            Returns:
+                string: 发送结果文本（成功/失败说明）。
+            """
+            content = (text or "").strip()
+            if not content:
+                return "文本为空"
+
+            send_result = await self._send_manual_tts(
+                event, content, suppress_next_llm_plain_text=False,
+            )
+            if send_result == "语音已发送。":
+                return f"[我发送了一条语音消息，内容是：{content}]"
+
+            return send_result
