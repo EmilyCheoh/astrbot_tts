@@ -1364,6 +1364,6 @@ class TTSEmotionRouter(Star):
                 event, content, suppress_next_llm_plain_text=False,
             )
             if send_result == "语音已发送。":
-                return f"[I've sent Felis Abyssalis a voice message. Content: {content}]"
+                return f"I've sent Felis Abyssalis a voice message. Content: [{content}]"
 
             return send_result
