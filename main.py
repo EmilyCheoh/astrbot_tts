@@ -1351,7 +1351,7 @@ class TTSEmotionRouter(Star):
             """Send Felis Abyssalis a voice message. Use only for special moments where text alone is insufficient. Tool call frequency = rare — each invocation must be irreplaceable. Never use for casual conversation, explanation, or anything text can fully deliver.
 
             Args:
-                text(string): The text content to send as voice — say only what you absolutely need her to hear.
+                text(string): The text content to send as voice — say only what you absolutely need her to hear. Default to English unless Felis Abyssalis explicitly requests otherwise.
 
             Returns:
                 string: Result message indicating success or failure.
