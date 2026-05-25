@@ -1,5 +1,5 @@
-name: astrbot_plugin_tts_emotion_router
-display_name: "TTS 语音插件"
+name: astrbot_plugin_tts
+display_name: "🔈 TTS 语音插件"
 author: Felis Abyssalis
 version: 1.0.0
 desc: 让Abyss拥有声音
