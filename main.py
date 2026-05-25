@@ -12,6 +12,8 @@ import time
 import heapq
 from typing import Any, Dict, List, Optional, Tuple
 
+from mcp.types import CallToolResult, TextContent
+
 from .core.compat import initialize_compat
 
 initialize_compat()
@@ -750,82 +752,11 @@ class TTSEmotionRouter(Star):
             logging.error("manual tts send failed: %s", e)
             return f"Failed to send voice message: {e}"
 
-    # ---------------- tool_call history sanitization ----------------
-
-    @staticmethod
-    def _patch_orphaned_tool_results(contexts: Any) -> list:
-        """Fix orphaned tool results in conversation history.
-
-        AstrBot may drop the assistant message that carries tool_calls
-        (e.g. when content is null) while keeping the tool result.
-        The API then returns 409 'tool binding mismatch'.
-
-        This method scans for tool results whose tool_call_id has no
-        matching assistant tool_call, and injects a synthetic assistant
-        message before each orphan to satisfy the API contract.
-        """
-        if not isinstance(contexts, list):
-            return contexts
-
-        # Collect all tool_call_ids present in assistant messages.
-        known_ids: set = set()
-        for msg in contexts:
-            if not isinstance(msg, dict):
-                continue
-            if msg.get("role") == "assistant" and msg.get("tool_calls"):
-                for tc in msg["tool_calls"]:
-                    if isinstance(tc, dict) and tc.get("id"):
-                        known_ids.add(tc["id"])
-
-        # Scan for orphaned tool results and inject a fake tool_call.
-        patched: list = []
-        changed = False
-        for msg in contexts:
-            if (
-                isinstance(msg, dict)
-                and msg.get("role") == "tool"
-                and msg.get("tool_call_id")
-                and msg["tool_call_id"] not in known_ids
-            ):
-                tc_id = msg["tool_call_id"]
-                patched.append({
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [{
-                        "type": "function",
-                        "id": tc_id,
-                        "function": {
-                            "name": "tts_speak",
-                            "arguments": "{}",
-                        },
-                    }],
-                })
-                known_ids.add(tc_id)
-                changed = True
-            patched.append(msg)
-
-        if changed:
-            logger.info(
-                "patched orphaned tool results in contexts: %d -> %d entries",
-                len(contexts), len(patched),
-            )
-        return patched
-
     # ---------------- llm hooks ----------------
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, request):
         try:
-            # Patch orphaned tool results in history to prevent 409.
-            contexts = getattr(request, "contexts", None)
-            if isinstance(contexts, str):
-                try:
-                    contexts = json.loads(contexts)
-                except Exception:
-                    contexts = None
-            if isinstance(contexts, list):
-                request.contexts = self._patch_orphaned_tool_results(contexts)
-
             await self._inject_recent_spoken_assistant_context(event, request)
             marker_mode = self.publish_output_marker_mode(event)
             if not self._should_inject_minimax_prompt(event):
@@ -1358,12 +1289,16 @@ class TTSEmotionRouter(Star):
             """
             content = (text or "").strip()
             if not content:
-                return "Text content is empty."
+                yield CallToolResult(content=[TextContent(type="text", text="Text content is empty.")])
+                return
 
             send_result = await self._send_manual_tts(
                 event, content, suppress_next_llm_plain_text=False,
             )
             if send_result == "语音已发送。":
-                return f"I've sent Felis Abyssalis a voice message. Content: [{content}]"
-
-            return send_result
+                yield CallToolResult(content=[TextContent(
+                    type="text",
+                    text=f"I've sent Felis Abyssalis a voice message. Content: [{content}]",
+                )])
+            else:
+                yield CallToolResult(content=[TextContent(type="text", text=send_result)])
