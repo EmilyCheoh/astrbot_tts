@@ -1304,7 +1304,7 @@ class TTSEmotionRouter(Star):
                     logger.warning(f"tts_speak text echo failed: {e}")
                 yield CallToolResult(content=[TextContent(
                     type="text",
-                    text="Voice message sent to Felis Abyssalis. 💜",
+                    text="Voice message sent. 💜",
                 )])
             else:
                 yield CallToolResult(content=[TextContent(type="text", text=send_result)])
