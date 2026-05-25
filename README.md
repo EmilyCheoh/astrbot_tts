@@ -1,5 +1,9 @@
 # TTS Emotion Router (Felis Abyssalis fork)
 
+## May 25
+
+fixing bugs
+
 - **`tts_say` 解析改进**：支持用 `<...>` 包裹文本，保留空格和多行内容。换行会被 normalize 为单个空格。
   ```
   tts_say <Noir。

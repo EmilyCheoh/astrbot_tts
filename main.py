@@ -13,6 +13,7 @@ import heapq
 from typing import Any, Dict, List, Optional, Tuple
 
 from mcp.types import CallToolResult, TextContent
+from astrbot.core.message.message_event_result import MessageChain
 
 from .core.compat import initialize_compat
 
@@ -1296,6 +1297,10 @@ class TTSEmotionRouter(Star):
                 event, content, suppress_next_llm_plain_text=False,
             )
             if send_result == "语音已发送。":
+                try:
+                    await event.send(MessageChain(chain=[Plain(content)]))
+                except Exception as e:
+                    logger.warning(f"tts_speak text echo failed: {e}")
                 yield CallToolResult(content=[TextContent(
                     type="text",
                     text=f"I've sent Felis Abyssalis a voice message. Content: [{content}]",
