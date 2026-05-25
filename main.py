@@ -1298,7 +1298,8 @@ class TTSEmotionRouter(Star):
             )
             if send_result == "语音已发送。":
                 try:
-                    await event.send(MessageChain(chain=[Plain(content)]))
+                    # await event.send(MessageChain(chain=[Plain(content)]))
+                    await event.send(MessageChain(chain=[Plain(f"Voice text:\n{content}")]))
                 except Exception as e:
                     logger.warning(f"tts_speak text echo failed: {e}")
                 yield CallToolResult(content=[TextContent(
