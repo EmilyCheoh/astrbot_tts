@@ -668,12 +668,27 @@ class TTSEmotionRouter(Star):
         return "\n\n".join(part for part in [text, *extra_parts] if part)
 
     def _build_display_result_chain(self, original_chain: List, display_text: str) -> List:
+        # 纯文字消息：保持原来的处理方式
+        if all(isinstance(comp, Plain) for comp in original_chain):
+            if (display_text or "").strip():
+                return [Plain(text=display_text.strip())]
+            return []
+
+        # 混合消息：逐段清理文字，保留所有组件的原始顺序
         new_chain = []
-        if (display_text or "").strip():
-            new_chain.append(Plain(text=display_text.strip()))
         for comp in original_chain:
-            if not isinstance(comp, Plain):
+            if isinstance(comp, Plain):
+                prepared = self._prepare_text_for_tts(comp.text)
+                cleaned = self._append_references_to_text(
+                    prepared.display_text,
+                    links=prepared.links,
+                    codes=prepared.codes,
+                )
+                if cleaned:
+                    new_chain.append(Plain(text=cleaned))
+            else:
                 new_chain.append(comp)
+
         return new_chain
 
     def _build_fallback_result_chain(
